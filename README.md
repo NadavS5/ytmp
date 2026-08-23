@@ -31,6 +31,18 @@ HOST=0.0.0.0 PORT=3000 MAX_CONCURRENT_DOWNLOADS=2 npm start
 
 ## VPS setup
 
-Clone the repo, install the three requirements, and run `npm start` under systemd or another process manager. Proxy requests to port 3000. Downloads use a temporary directory and are removed after each response.
+Clone the repo, install the three requirements, and run `npm start` under systemd or another process manager. Proxy requests to port 3000.
+
+Downloads stream through `yt-dlp` and `ffmpeg` pipes. The server does not write media files to disk. If you use nginx, disable response buffering and allow long-running responses:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_buffering off;
+    proxy_read_timeout 30m;
+}
+```
+
+Streaming conversions do not have an exact final size before they finish, so the binary response uses chunked transfer encoding. The in-page progress display uses `yt-dlp` byte counts and ETA estimates.
 
 Only download media you have permission to use. You are responsible for complying with the source site's terms and local law.

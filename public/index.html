@@ -6,8 +6,8 @@
     <meta name="description" content="Inspect a media link and download it as MP3 or MP4." />
     <title>ytmp</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/styles.css?v=20260823-1" />
-    <script src="/app.js?v=20260823-1" type="module"></script>
+    <link rel="stylesheet" href="/styles.css?v=20260824-1" />
+    <script src="/app.js?v=20260824-1" type="module"></script>
   </head>
   <body>
     <div class="shell">
@@ -86,6 +86,25 @@
                 <span class="download-main">Download <b id="download-type">MP3</b></span>
                 <span class="download-meta" id="download-quality">128 kbps</span>
               </button>
+              <div class="download-progress" id="download-progress" role="status" hidden>
+                <div class="progress-heading">
+                  <span id="progress-status">Starting download</span>
+                  <strong id="progress-percent">0%</strong>
+                </div>
+                <div
+                  class="progress-rail"
+                  id="progress-rail"
+                  role="progressbar"
+                  aria-label="Download progress"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuenow="0"
+                ><i id="progress-fill"></i></div>
+                <div class="progress-stats">
+                  <span id="progress-bytes">Waiting for size</span>
+                  <span id="progress-eta">Calculating time</span>
+                </div>
+              </div>
               <p class="legal-note">Download only media you have permission to use.</p>
             </section>
           </div>

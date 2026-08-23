@@ -514,6 +514,72 @@ fieldset {
   opacity: 0.7;
 }
 
+.download-progress {
+  margin-top: 16px;
+  padding: 16px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+}
+
+.download-progress[hidden] {
+  display: none;
+}
+
+.progress-heading,
+.progress-stats {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font-family: var(--mono);
+}
+
+.progress-heading {
+  margin-bottom: 12px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.progress-heading span[data-error="true"] {
+  color: #b52d12;
+}
+
+.progress-heading strong {
+  color: var(--blue);
+  font-size: 11px;
+}
+
+.progress-rail {
+  height: 7px;
+  overflow: hidden;
+  background: #c6ced5;
+}
+
+.progress-rail i {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--blue);
+  transition: width 180ms linear;
+}
+
+.progress-rail i.is-indeterminate {
+  animation: progress-pulse 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes progress-pulse {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(550%); }
+}
+
+.progress-stats {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
 .download-main {
   font-weight: 700;
 }
