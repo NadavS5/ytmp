@@ -8,6 +8,15 @@ A small web interface for `yt-dlp`. Paste a supported media URL, inspect the ava
 - A current `yt-dlp` release
 - `ffmpeg`
 
+Distribution packages often lag behind YouTube changes. On Debian or Ubuntu, install the current upstream binary:
+
+```bash
+sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+  -o /usr/local/bin/yt-dlp
+sudo chmod 0755 /usr/local/bin/yt-dlp
+yt-dlp --version
+```
+
 ## Run
 
 ```bash

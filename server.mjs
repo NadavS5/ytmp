@@ -92,7 +92,10 @@ function runYtDlp(args, { timeout = 45_000, maxOutput = 8 * 1024 * 1024 } = {}) 
     });
     child.on("close", (code) => {
       if (code === 0) return finish(null, stdout);
-      const message = stderr.trim().split("\n").at(-1)?.replace(/^ERROR:\s*/, "");
+      let message = stderr.trim().split("\n").at(-1)?.replace(/^ERROR:\s*/, "");
+      if (message?.includes("The page needs to be reloaded")) {
+        message = "YouTube rejected the installed yt-dlp version. Update yt-dlp on the server and try again.";
+      }
       finish(new Error(message || "yt-dlp could not read this URL."));
     });
   });
