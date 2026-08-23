@@ -190,24 +190,27 @@ legend {
 }
 
 .url-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  border-bottom: 2px solid var(--ink);
-}
-
-.url-row:focus-within {
-  border-color: var(--blue);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 #media-url {
   min-width: 0;
   height: 56px;
-  padding: 0 18px 0 0;
+  width: 100%;
+  padding: 0 16px;
   background: transparent;
-  border: 0;
+  border: 1px solid var(--line);
+  border-bottom: 2px solid var(--ink);
   color: var(--ink);
   font-size: 16px;
-  outline: none;
+}
+
+#media-url:focus-visible {
+  border-color: var(--blue);
+  outline: 3px solid var(--orange);
+  outline-offset: 3px;
 }
 
 #media-url::placeholder {
@@ -215,12 +218,13 @@ legend {
 }
 
 .inspect-button {
-  align-self: center;
+  width: 100%;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
-  height: 40px;
-  padding: 0 15px;
+  height: 50px;
+  padding: 0 18px;
   background: var(--ink);
   border: 0;
   color: white;
@@ -328,16 +332,17 @@ legend {
 }
 
 .media-card {
-  display: grid;
-  grid-template-columns: 108px 1fr;
-  gap: 20px;
-  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: stretch;
   margin-bottom: 34px;
 }
 
 .thumbnail-wrap {
   position: relative;
-  height: 68px;
+  width: 100%;
+  aspect-ratio: 16 / 9;
   overflow: hidden;
   background: var(--paper-deep);
 }
@@ -377,7 +382,7 @@ legend {
   display: -webkit-box;
   overflow: hidden;
   margin: 0;
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 700;
   line-height: 1.35;
   -webkit-box-orient: vertical;
@@ -391,9 +396,9 @@ fieldset {
 }
 
 .format-switch {
-  position: relative;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   padding: 4px;
   background: var(--paper-deep);
 }
@@ -405,15 +410,14 @@ fieldset {
 }
 
 .format-switch label {
-  position: relative;
-  z-index: 1;
   display: flex;
   align-items: baseline;
-  justify-content: center;
+  justify-content: space-between;
   gap: 8px;
-  padding: 14px;
+  min-height: 58px;
+  padding: 14px 18px;
   color: var(--muted);
-  transition: color 180ms ease;
+  transition: background 180ms ease, color 180ms ease;
 }
 
 .format-switch label strong {
@@ -429,23 +433,13 @@ fieldset {
 }
 
 .format-switch input:checked + label {
+  background: var(--blue);
   color: white;
 }
 
 .format-switch input:focus-visible + label {
   outline: 3px solid var(--orange);
   outline-offset: -3px;
-}
-
-.switch-head {
-  position: absolute;
-  inset: 4px 50% 4px 4px;
-  background: var(--blue);
-  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-#format-mp4:checked ~ .switch-head {
-  transform: translateX(100%);
 }
 
 .quality-fieldset {
@@ -463,7 +457,7 @@ fieldset {
 
 .quality-list {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 7px;
 }
 
@@ -474,13 +468,13 @@ fieldset {
 
 .quality-option span {
   display: block;
-  min-width: 74px;
-  padding: 10px 12px;
+  width: 100%;
+  padding: 12px 14px;
   border: 1px solid var(--line);
   color: var(--muted);
   font-family: var(--mono);
   font-size: 10px;
-  text-align: center;
+  text-align: left;
 }
 
 .quality-option input:checked + span {
@@ -498,9 +492,11 @@ fieldset {
   width: 100%;
   min-height: 62px;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 20px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 3px;
+  padding: 12px 20px;
   background: var(--blue);
   border: 0;
   color: white;
@@ -568,11 +564,6 @@ footer a:hover {
   .topbar p { display: none; }
   .intro { padding: 0 18px; }
   .deck { padding: 26px 18px; border-left: 0; border-right: 0; box-shadow: 0 12px 30px rgb(31 43 57 / 10%); }
-  .url-row { grid-template-columns: 1fr; }
-  .inspect-button { margin-bottom: 10px; justify-content: center; }
-  .media-card { grid-template-columns: 88px 1fr; gap: 14px; }
-  .format-switch label { gap: 4px; padding-inline: 8px; }
-  .format-switch label span { display: none; }
   footer { flex-direction: column; justify-content: center; gap: 6px; align-items: flex-start; }
 }
 

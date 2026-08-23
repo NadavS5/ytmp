@@ -248,7 +248,7 @@ async function serveStatic(res, pathname) {
   res.writeHead(200, {
     "content-type": mimeTypes[extname(filePath)] || "application/octet-stream",
     "content-length": fileStat.size,
-    "cache-control": extname(filePath) === ".html" ? "no-cache" : "public, max-age=3600",
+    "cache-control": "no-cache",
     "x-content-type-options": "nosniff",
   });
   createReadStream(filePath).pipe(res);
