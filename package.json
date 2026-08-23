@@ -1,0 +1,14 @@
+{
+  "name": "ytmp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A small yt-dlp web interface for MP3 and MP4 downloads.",
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check server.mjs && node --check public/app.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

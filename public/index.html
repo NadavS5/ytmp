@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Inspect a media link and download it as MP3 or MP4." />
+    <title>ytmp</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" type="module"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="ytmp home">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+          <span>ytmp</span>
+        </a>
+        <p>media out, clutter out</p>
+      </header>
+
+      <main>
+        <section class="workspace" aria-labelledby="page-title">
+          <div class="intro">
+            <p class="kicker">Link to file</p>
+            <h1 id="page-title">Choose what<br />comes out.</h1>
+            <p class="intro-copy">Paste a media link. ytmp reads the available formats before you pick the file.</p>
+          </div>
+
+          <div class="deck">
+            <form id="inspect-form" novalidate>
+              <label for="media-url">Media URL</label>
+              <div class="url-row">
+                <input
+                  id="media-url"
+                  name="url"
+                  type="url"
+                  placeholder="https://youtu.be/..."
+                  autocomplete="url"
+                  spellcheck="false"
+                  required
+                />
+                <button class="inspect-button" type="submit">
+                  <span>Read link</span>
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11M11 5l5 5-5 5" /></svg>
+                </button>
+              </div>
+              <p class="field-note" id="form-status" role="status">One item per link. Playlists stay out.</p>
+            </form>
+
+            <div class="track" aria-hidden="true">
+              <span class="track-label">INPUT</span>
+              <div class="track-line"><i></i></div>
+              <span class="track-label">OUTPUT</span>
+            </div>
+
+            <section class="result" id="result" aria-live="polite" hidden>
+              <div class="media-card">
+                <div class="thumbnail-wrap">
+                  <img id="thumbnail" alt="" />
+                  <span id="duration">00:00</span>
+                </div>
+                <div class="media-info">
+                  <p id="uploader">Source</p>
+                  <h2 id="media-title">Media title</h2>
+                </div>
+              </div>
+
+              <fieldset>
+                <legend>File type</legend>
+                <div class="format-switch">
+                  <input type="radio" name="format" id="format-mp3" value="mp3" checked />
+                  <label for="format-mp3"><strong>MP3</strong><span>audio only</span></label>
+                  <input type="radio" name="format" id="format-mp4" value="mp4" />
+                  <label for="format-mp4"><strong>MP4</strong><span>video + audio</span></label>
+                  <i class="switch-head" aria-hidden="true"></i>
+                </div>
+              </fieldset>
+
+              <fieldset class="quality-fieldset">
+                <legend>Available quality</legend>
+                <span class="quality-count" id="quality-count"></span>
+                <div class="quality-list" id="quality-list"></div>
+              </fieldset>
+
+              <button class="download-button" id="download-button" type="button">
+                <span class="download-main">Download <b id="download-type">MP3</b></span>
+                <span class="download-meta" id="download-quality">128 kbps</span>
+              </button>
+              <p class="legal-note">Download only media you have permission to use.</p>
+            </section>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <span>ytmp / local transfer utility</span>
+        <a href="https://github.com/yt-dlp/yt-dlp" rel="noreferrer">Powered by yt-dlp</a>
+      </footer>
+    </div>
+  </body>
+</html>
