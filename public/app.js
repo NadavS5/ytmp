@@ -104,7 +104,7 @@ function formatEta(seconds) {
 
 function resetProgress() {
   downloadProgress.hidden = false;
-  progressStatus.textContent = "Starting download";
+  progressStatus.textContent = "Starting preparation";
   progressStatus.dataset.error = "false";
   progressPercent.textContent = "0%";
   progressFill.style.width = "0%";
@@ -118,7 +118,7 @@ function updateProgress(data) {
   const percent = hasTotal ? Math.min(100, (data.downloadedBytes / data.totalBytes) * 100) : null;
   const remaining = hasTotal ? Math.max(0, data.totalBytes - data.downloadedBytes) : null;
 
-  progressStatus.textContent = data.status === "finished" ? "Preparing output" : "Downloading";
+  progressStatus.textContent = data.status === "finished" ? "Preparing output" : "Downloading to server";
   progressPercent.textContent = percent === null ? "--" : `${Math.round(percent)}%`;
   progressFill.style.width = percent === null ? "18%" : `${percent}%`;
   progressFill.classList.toggle("is-indeterminate", percent === null);
@@ -134,8 +134,8 @@ function updateProgress(data) {
 
 function setProgressState(state) {
   const labels = {
-    waiting: "Waiting for download",
-    streaming: "Sending file to browser",
+    waiting: "Waiting in server queue",
+    downloading: "Downloading to server",
     converting: "Converting to MP3",
     merging: "Merging video and audio",
   };
@@ -213,15 +213,18 @@ downloadButton.addEventListener("click", async () => {
     const events = new EventSource(job.eventsUrl);
     events.addEventListener("state", (event) => setProgressState(JSON.parse(event.data).status));
     events.addEventListener("progress", (event) => updateProgress(JSON.parse(event.data)));
-    events.addEventListener("complete", () => {
-      progressStatus.textContent = "Download sent";
+    events.addEventListener("ready", (event) => {
+      const data = JSON.parse(event.data);
+      progressStatus.textContent = "File ready";
       progressPercent.textContent = "100%";
       progressFill.style.width = "100%";
       progressFill.classList.remove("is-indeterminate");
       progressRail.setAttribute("aria-valuenow", "100");
-      progressEta.textContent = "Complete";
+      progressBytes.textContent = `${formatBytes(data.sizeBytes)} ready`;
+      progressEta.textContent = "Track the transfer in Ctrl-J";
       downloadButton.disabled = false;
       events.close();
+      window.location.assign(data.downloadUrl);
     });
     events.addEventListener("failure", (event) => {
       const data = JSON.parse(event.data);
@@ -231,7 +234,6 @@ downloadButton.addEventListener("click", async () => {
       downloadButton.disabled = false;
       events.close();
     });
-    window.location.assign(job.downloadUrl);
   } catch (error) {
     progressStatus.textContent = error.message;
     progressStatus.dataset.error = "true";

@@ -1,17 +1,31 @@
 import { createReadStream, existsSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { mkdir, readdir, rm, stat, statfs } from "node:fs/promises";
 import { createServer } from "node:http";
-import { extname, resolve, sep } from "node:path";
+import { extname, join, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+
+function positiveInteger(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 const port = Number(process.env.PORT) || 3000;
 const host = process.env.HOST || "127.0.0.1";
 const publicDir = resolve("public");
+const downloadRoot = resolve(process.env.DOWNLOAD_DIR || join(tmpdir(), "ytmp"));
 const maxBodyBytes = 16 * 1024;
-const maxConcurrentDownloads = Number(process.env.MAX_CONCURRENT_DOWNLOADS) || 2;
-const downloadJobTtl = 10 * 60_000;
+const maxConcurrentDownloads = positiveInteger(process.env.MAX_CONCURRENT_DOWNLOADS, 1);
+const concurrentFragments = positiveInteger(process.env.CONCURRENT_FRAGMENTS, 4);
+const maxFileSizeMb = positiveInteger(process.env.MAX_FILE_SIZE_MB, 4096);
+const maxFileSizeBytes = maxFileSizeMb * 1024 * 1024;
+const minFreeDiskMb = positiveInteger(process.env.MIN_FREE_DISK_MB, 5120);
+const minFreeDiskBytes = minFreeDiskMb * 1024 * 1024;
+const downloadJobTtl = positiveInteger(process.env.JOB_TTL_MINUTES, 15) * 60_000;
+const downloadTimeout = positiveInteger(process.env.DOWNLOAD_TIMEOUT_MINUTES, 120) * 60_000;
 const downloadJobs = new Map();
+const pendingDownloads = [];
 let activeDownloads = 0;
 
 const mimeTypes = {
@@ -23,10 +37,11 @@ const mimeTypes = {
   ".ico": "image/x-icon",
 };
 
-function sendJson(res, status, body) {
+function sendJson(res, status, body, extraHeaders = {}) {
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
+    ...extraHeaders,
   });
   res.end(JSON.stringify(body));
 }
@@ -110,18 +125,11 @@ function uniqueSortedNumbers(values) {
 function summarizeFormats(info) {
   const formats = Array.isArray(info.formats) ? info.formats : [];
   const videoHeights = uniqueSortedNumbers(
-    formats
-      .filter((format) => format.vcodec && format.vcodec !== "none")
-      .map((format) => Number(format.height)),
+    formats.filter((format) => format.vcodec && format.vcodec !== "none").map((format) => Number(format.height)),
   );
   const audioBitrates = uniqueSortedNumbers(
     formats
-      .filter(
-        (format) =>
-          format.acodec &&
-          format.acodec !== "none" &&
-          (!format.vcodec || format.vcodec === "none"),
-      )
+      .filter((format) => format.acodec && format.acodec !== "none" && (!format.vcodec || format.vcodec === "none"))
       .map((format) => Number(format.abr || format.tbr)),
   );
 
@@ -167,13 +175,16 @@ function safeDownloadName(filename) {
   return filename.replace(/[\r\n"\\]/g, "_");
 }
 
+function contentDisposition(filename) {
+  const safeName = safeDownloadName(filename);
+  const asciiName = safeName.replace(/[^\x20-\x7e]/g, "_");
+  return `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(safeName)}`;
+}
+
 function hasValidDownloadOptions(mediaUrl, type, qualityParam) {
   const quality = Number(qualityParam);
-  return (
-    isValidMediaUrl(mediaUrl) &&
-    ["mp3", "mp4"].includes(type) &&
-    (qualityParam === "best" || Number.isFinite(quality))
-  );
+  return isValidMediaUrl(mediaUrl) && ["mp3", "mp4"].includes(type) &&
+    (qualityParam === "best" || Number.isFinite(quality));
 }
 
 function sendJobEvent(job, event, data) {
@@ -182,77 +193,48 @@ function sendJobEvent(job, event, data) {
   for (const listener of job.listeners) listener.write(payload);
 }
 
+async function removeJob(job) {
+  clearTimeout(job.removalTimer);
+  for (const listener of job.listeners) listener.end();
+  job.listeners.clear();
+  downloadJobs.delete(job.id);
+  if (job.directory) await rm(job.directory, { recursive: true, force: true });
+}
+
+async function cleanupOrphanedDownloads() {
+  const entries = await readdir(downloadRoot, { withFileTypes: true });
+  const now = Date.now();
+  await Promise.all(entries.map(async (entry) => {
+    if (!entry.isDirectory() || !/^[0-9a-f-]{36}$/.test(entry.name) || downloadJobs.has(entry.name)) return;
+    const directory = join(downloadRoot, entry.name);
+    const directoryStat = await stat(directory);
+    if (now - directoryStat.mtimeMs >= downloadJobTtl) {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }));
+}
+
 function scheduleJobRemoval(job) {
   clearTimeout(job.removalTimer);
-  job.removalTimer = setTimeout(() => {
-    for (const listener of job.listeners) listener.end();
-    downloadJobs.delete(job.id);
-  }, downloadJobTtl);
+  job.removalTimer = setTimeout(() => void removeJob(job).catch(console.error), downloadJobTtl);
   job.removalTimer.unref();
 }
 
-async function createDownloadJob(req, res) {
-  let body;
-  try {
-    body = await readJson(req);
-  } catch (error) {
-    return sendJson(res, 400, { error: error.message });
-  }
-
-  const qualityParam = String(body.quality ?? "");
-  if (!hasValidDownloadOptions(body.url, body.type, qualityParam)) {
-    return sendJson(res, 400, { error: "The download options are invalid." });
-  }
-
-  if (downloadJobs.size >= 100) {
-    return sendJson(res, 503, { error: "The server has too many pending downloads." });
-  }
-
-  const job = {
-    id: randomUUID(),
-    url: body.url,
-    type: body.type,
-    quality: qualityParam,
-    title: String(body.title || "download").slice(0, 160),
-    listeners: new Set(),
-    lastEvent: { event: "state", data: { status: "waiting" } },
-    started: false,
-    completedBytes: 0,
-    phaseFinished: false,
-    removalTimer: null,
-  };
-  downloadJobs.set(job.id, job);
-  scheduleJobRemoval(job);
-  sendJson(res, 201, {
-    id: job.id,
-    downloadUrl: `/api/downloads/${job.id}/file`,
-    eventsUrl: `/api/downloads/${job.id}/events`,
-  });
+async function freeDiskBytes() {
+  const disk = await statfs(downloadRoot);
+  return disk.bavail * disk.bsize;
 }
 
-function subscribeToDownload(job, req, res) {
-  res.writeHead(200, {
-    "content-type": "text/event-stream; charset=utf-8",
-    "cache-control": "no-cache, no-transform",
-    connection: "keep-alive",
-    "x-accel-buffering": "no",
-  });
-  res.write(": connected\n\n");
-  job.listeners.add(res);
-  if (job.lastEvent) {
-    res.write(`event: ${job.lastEvent.event}\ndata: ${JSON.stringify(job.lastEvent.data)}\n\n`);
+function normalizeYtDlpError(message) {
+  const clean = message?.replace(/^ERROR:\s*/, "").trim();
+  if (clean?.includes("The page needs to be reloaded")) {
+    return "YouTube rejected the installed yt-dlp version. Update yt-dlp on the server and try again.";
   }
-
-  const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 15_000);
-  heartbeat.unref();
-  req.on("close", () => {
-    clearInterval(heartbeat);
-    job.listeners.delete(res);
-  });
+  return clean || "The download failed.";
 }
 
 function parseProgressLine(job, line) {
-  if (!line.startsWith("ytmp:")) return;
+  if (!line.startsWith("ytmp:")) return false;
   const [downloadedRaw, totalRaw, estimateRaw, etaRaw, speedRaw, status] = line.slice(5).split("|");
   const downloaded = Number(downloadedRaw);
   const exactTotal = Number(totalRaw);
@@ -275,237 +257,300 @@ function parseProgressLine(job, line) {
   } else if (status === "downloading") {
     job.phaseFinished = false;
   }
+  return true;
 }
 
-function streamDownload(job, req, res) {
-  if (job.started) return sendJson(res, 409, { error: "This download has already started." });
-  if (activeDownloads >= maxConcurrentDownloads) {
-    return sendJson(res, 429, { error: "The server is busy. Try again in a moment." });
-  }
-
-  job.started = true;
-  activeDownloads += 1;
-  clearTimeout(job.removalTimer);
-  const quality = Number(job.quality);
+function buildDownloadArgs(job) {
   const args = [
     "--no-playlist",
     "--no-warnings",
     "--newline",
+    "--concurrent-fragments",
+    String(concurrentFragments),
+    "--max-filesize",
+    `${maxFileSizeMb}M`,
     "--progress-template",
     "download:ytmp:%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.eta)s|%(progress.speed)s|%(progress.status)s",
     "-o",
-    "-",
+    join(job.directory, "media.%(ext)s"),
   ];
 
   if (job.type === "mp3") {
-    args.push("-f", "bestaudio/best");
+    const audioQuality = job.quality === "best" ? "0" : `${Math.max(32, Math.min(320, Number(job.quality)))}K`;
+    args.push("-f", "bestaudio/best", "-x", "--audio-format", "mp3", "--audio-quality", audioQuality);
   } else {
-    const maxHeight = Math.max(144, Math.min(4320, quality));
-    const formatSelector = job.quality === "best"
+    const maxHeight = Math.max(144, Math.min(4320, Number(job.quality)));
+    const selector = job.quality === "best"
       ? "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/best[ext=mp4]/best"
       : `bestvideo[height<=${maxHeight}][vcodec^=avc1]+bestaudio[acodec^=mp4a]/best[height<=${maxHeight}][ext=mp4]/best`;
-    args.push("-f", formatSelector);
+    args.push("-f", selector, "--merge-output-format", "mp4", "--remux-video", "mp4");
   }
+
   args.push(job.url);
+  return args;
+}
 
-  const child = spawn("yt-dlp", args, { stdio: ["ignore", "pipe", "pipe"] });
-  const ffmpegArgs = job.type === "mp3"
-    ? [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        "pipe:0",
-        "-vn",
-        ...(job.quality === "best"
-          ? ["-c:a", "libmp3lame", "-q:a", "0"]
-          : ["-c:a", "libmp3lame", "-b:a", `${Math.max(32, Math.min(320, quality))}k`]),
-        "-f",
-        "mp3",
-        "pipe:1",
-      ]
-    : [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        "pipe:0",
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a:0?",
-        "-c",
-        "copy",
-        "-bsf:a",
-        "aac_adtstoasc",
-        "-movflags",
-        "frag_keyframe+empty_moov+default_base_moof",
-        "-f",
-        "mp4",
-        "pipe:1",
-      ];
-  const transcoder = spawn("ffmpeg", ffmpegArgs, { stdio: ["pipe", "pipe", "pipe"] });
-  const mediaStream = transcoder.stdout;
-  const processes = [child, transcoder];
-  let stderrBuffer = "";
+async function findPreparedFile(job) {
+  const expectedPath = join(job.directory, `media.${job.type}`);
+  if (existsSync(expectedPath)) return expectedPath;
+  const entries = await readdir(job.directory, { withFileTypes: true });
+  const candidates = entries
+    .filter((entry) => entry.isFile() && !entry.name.endsWith(".part") && !entry.name.endsWith(".ytdl"))
+    .map((entry) => join(job.directory, entry.name));
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+async function prepareDownload(job) {
+  activeDownloads += 1;
+  clearTimeout(job.removalTimer);
+  job.status = "preparing";
+  job.directory = join(downloadRoot, job.id);
+  let child;
+  let diskTimer;
+  let timeout;
   let lastError = "";
-  let responseStarted = false;
-  let settled = false;
-  let ytDlpClosed = false;
-  let ytDlpExitCode = null;
-  let transcoderClosed = false;
-  let transcoderExitCode = null;
 
-  child.stdout.pipe(transcoder.stdin);
-
-  const timeout = setTimeout(() => {
-    for (const process of processes) process.kill("SIGKILL");
-  }, 30 * 60_000);
-  timeout.unref();
-
-  transcoder.stdin.on("error", (error) => {
-    if (error.code !== "EPIPE") lastError = error.message;
-  });
-
-  function finish(code, error) {
-    if (settled) return;
-    settled = true;
-    clearTimeout(timeout);
-    if (code !== 0 || error) {
-      for (const process of processes) {
-        if (!process.killed) process.kill("SIGKILL");
-      }
+  try {
+    await mkdir(job.directory, { recursive: true });
+    if ((await freeDiskBytes()) < minFreeDiskBytes) {
+      throw new Error(`The server has less than ${minFreeDiskMb} MB of free disk space.`);
     }
+
+    sendJobEvent(job, "state", { status: "downloading" });
+    child = spawn("yt-dlp", buildDownloadArgs(job), { stdio: ["ignore", "pipe", "pipe"] });
+    let stdoutBuffer = "";
+    let stderrBuffer = "";
+    const consumeLines = (source, chunk) => {
+      const combined = `${source === "stdout" ? stdoutBuffer : stderrBuffer}${chunk}`;
+      const lines = combined.split("\n");
+      if (source === "stdout") stdoutBuffer = lines.pop() || "";
+      else stderrBuffer = lines.pop() || "";
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (parseProgressLine(job, line)) continue;
+        if (line.startsWith("ERROR:")) lastError = line;
+        if (/^\[(ExtractAudio|Merger|VideoRemuxer|Metadata)\]/.test(line)) {
+          sendJobEvent(job, "state", { status: job.type === "mp3" ? "converting" : "merging" });
+        }
+      }
+    };
+
+    child.stdout.on("data", (chunk) => consumeLines("stdout", String(chunk)));
+    child.stderr.on("data", (chunk) => consumeLines("stderr", String(chunk)));
+    diskTimer = setInterval(async () => {
+      try {
+        if ((await freeDiskBytes()) < minFreeDiskBytes) {
+          lastError = `The server reached its ${minFreeDiskMb} MB free-space reserve.`;
+          child.kill("SIGKILL");
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    }, 5000);
+    diskTimer.unref();
+    timeout = setTimeout(() => {
+      lastError = "The download exceeded the server time limit.";
+      child.kill("SIGKILL");
+    }, downloadTimeout);
+    timeout.unref();
+
+    const exitCode = await new Promise((resolvePromise, reject) => {
+      child.once("error", (error) => {
+        reject(new Error(error.code === "ENOENT" ? "yt-dlp is not installed on this server." : error.message));
+      });
+      child.once("close", resolvePromise);
+    });
+    if (exitCode !== 0) throw new Error(normalizeYtDlpError(lastError));
+
+    const filePath = await findPreparedFile(job);
+    if (!filePath) throw new Error("yt-dlp finished without creating a downloadable file.");
+    const fileStat = await stat(filePath);
+    if (!fileStat.isFile() || fileStat.size === 0) throw new Error("The prepared file is empty.");
+    if (fileStat.size > maxFileSizeBytes) throw new Error(`The prepared file exceeds the ${maxFileSizeMb} MB limit.`);
+
+    job.filePath = filePath;
+    job.fileSize = fileStat.size;
+    job.status = "ready";
+    sendJobEvent(job, "ready", {
+      status: "ready",
+      sizeBytes: job.fileSize,
+      downloadUrl: `/api/downloads/${job.id}/file`,
+    });
+  } catch (error) {
+    job.status = "failed";
+    sendJobEvent(job, "failure", { status: "failed", error: normalizeYtDlpError(error.message) });
+  } finally {
+    clearInterval(diskTimer);
+    clearTimeout(timeout);
     activeDownloads -= 1;
     scheduleJobRemoval(job);
+    pumpDownloadQueue();
+  }
+}
 
-    if (code === 0 && !error) {
-      if (!responseStarted) {
-        sendJson(res, 422, { error: "The media host returned no data." });
-      } else if (!res.writableEnded) {
-        res.end();
-      }
-      sendJobEvent(job, "complete", { status: "complete" });
-      for (const listener of job.listeners) listener.end();
-      job.listeners.clear();
-      return;
-    }
+function pumpDownloadQueue() {
+  while (activeDownloads < maxConcurrentDownloads && pendingDownloads.length) {
+    const job = pendingDownloads.shift();
+    if (!job || !downloadJobs.has(job.id) || job.status !== "waiting") continue;
+    void prepareDownload(job);
+  }
+}
 
-    const message = error?.message || lastError || "The download failed.";
-    if (!responseStarted && !res.headersSent) sendJson(res, 422, { error: message });
-    else if (!res.writableEnded) res.destroy();
-    sendJobEvent(job, "failure", { status: "failed", error: message });
-    for (const listener of job.listeners) listener.end();
-    job.listeners.clear();
+async function createDownloadJob(req, res) {
+  let body;
+  try {
+    body = await readJson(req);
+  } catch (error) {
+    return sendJson(res, 400, { error: error.message });
   }
 
-  child.once("error", (error) => {
-    const message = error.code === "ENOENT" ? "yt-dlp is not installed on this server." : error.message;
-    finish(1, new Error(message));
-  });
-
-  transcoder.once("error", (error) => {
-    const message = error.code === "ENOENT" ? "ffmpeg is not installed on this server." : error.message;
-    finish(1, new Error(message));
-  });
-
-  mediaStream.once("data", (chunk) => {
-    responseStarted = true;
-    res.writeHead(200, {
-      "content-type": job.type === "mp3" ? "audio/mpeg" : "video/mp4",
-      "content-disposition": `attachment; filename="${safeDownloadName(`${job.title}.${job.type}`)}"`,
-      "cache-control": "no-store",
-      "x-accel-buffering": "no",
-    });
-    res.write(chunk);
-    mediaStream.pipe(res, { end: false });
-    sendJobEvent(job, "state", { status: job.type === "mp3" ? "converting" : "streaming" });
-  });
-
-  child.stderr.on("data", (chunk) => {
-    stderrBuffer += chunk;
-    const lines = stderrBuffer.split("\n");
-    stderrBuffer = lines.pop() || "";
-    for (const line of lines) {
-      parseProgressLine(job, line.trim());
-      if (line.startsWith("ERROR:")) lastError = line.replace(/^ERROR:\s*/, "").trim();
-      if (/^\[(ExtractAudio|Merger|VideoRemuxer)\]/.test(line)) {
-        sendJobEvent(job, "state", { status: job.type === "mp3" ? "converting" : "merging" });
-      }
-    }
-  });
-
-  transcoder.stderr.on("data", (chunk) => {
-    const message = String(chunk).trim();
-    if (message) lastError = message.split("\n").at(-1);
-  });
-
-  function finishWhenProcessesClose() {
-    if (!ytDlpClosed || !transcoderClosed) return;
-    const code = ytDlpExitCode || transcoderExitCode || 0;
-    finish(code);
+  const qualityParam = String(body.quality ?? "");
+  if (!hasValidDownloadOptions(body.url, body.type, qualityParam)) {
+    return sendJson(res, 400, { error: "The download options are invalid." });
+  }
+  if (downloadJobs.size >= 100) {
+    return sendJson(res, 503, { error: "The server has too many pending downloads." });
   }
 
-  child.once("close", (code) => {
-    ytDlpClosed = true;
-    ytDlpExitCode = code;
-    finishWhenProcessesClose();
+  const job = {
+    id: randomUUID(), url: body.url, type: body.type, quality: qualityParam,
+    title: String(body.title || "download").slice(0, 160), listeners: new Set(),
+    lastEvent: { event: "state", data: { status: "waiting" } }, status: "waiting",
+    directory: null, filePath: null, fileSize: null, completedBytes: 0,
+    phaseFinished: false, removalTimer: null, activeTransfers: 0,
+  };
+  downloadJobs.set(job.id, job);
+  scheduleJobRemoval(job);
+  sendJson(res, 201, { id: job.id, eventsUrl: `/api/downloads/${job.id}/events` });
+  pendingDownloads.push(job);
+  pumpDownloadQueue();
+}
+
+function subscribeToDownload(job, req, res) {
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
   });
-  transcoder.once("close", (code) => {
-    transcoderClosed = true;
-    transcoderExitCode = code;
-    finishWhenProcessesClose();
-  });
-  res.once("close", () => {
-    if (!res.writableEnded && !settled) {
-      for (const process of processes) process.kill("SIGKILL");
-      finish(1, new Error("The client canceled the download."));
-    }
+  res.write(": connected\n\n");
+  job.listeners.add(res);
+  if (job.lastEvent) res.write(`event: ${job.lastEvent.event}\ndata: ${JSON.stringify(job.lastEvent.data)}\n\n`);
+  const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 15_000);
+  heartbeat.unref();
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    job.listeners.delete(res);
   });
 }
 
-async function serveStatic(res, pathname) {
+function parseRange(rangeHeader, size) {
+  if (!rangeHeader) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+  if (!match || (!match[1] && !match[2])) return false;
+  let start;
+  let end;
+  if (!match[1]) {
+    const suffixLength = Number(match[2]);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return false;
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  } else {
+    start = Number(match[1]);
+    end = match[2] ? Number(match[2]) : size - 1;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= size) return false;
+    end = Math.min(end, size - 1);
+  }
+  return { start, end };
+}
+
+function servePreparedDownload(job, req, res) {
+  if (job.status !== "ready" || !job.filePath || !Number.isFinite(job.fileSize)) {
+    return sendJson(res, 409, { error: "This file is still being prepared." }, { "retry-after": "2" });
+  }
+
+  const range = parseRange(req.headers.range, job.fileSize);
+  if (range === false) {
+    res.writeHead(416, {
+      "content-range": `bytes */${job.fileSize}`,
+      "accept-ranges": "bytes",
+      "cache-control": "no-store",
+    });
+    return res.end();
+  }
+
+  const start = range?.start ?? 0;
+  const end = range?.end ?? job.fileSize - 1;
+  const contentLength = end - start + 1;
+  const headers = {
+    "content-type": job.type === "mp3" ? "audio/mpeg" : "video/mp4",
+    "content-disposition": contentDisposition(`${job.title}.${job.type}`),
+    "content-length": contentLength,
+    "accept-ranges": "bytes",
+    "cache-control": "private, no-store",
+    "x-content-type-options": "nosniff",
+  };
+  if (range) headers["content-range"] = `bytes ${start}-${end}/${job.fileSize}`;
+  res.writeHead(range ? 206 : 200, headers);
+  clearTimeout(job.removalTimer);
+  job.activeTransfers += 1;
+  let transferFinished = false;
+  const finishTransfer = () => {
+    if (transferFinished) return;
+    transferFinished = true;
+    job.activeTransfers -= 1;
+    if (job.activeTransfers === 0) scheduleJobRemoval(job);
+  };
+  res.on("finish", finishTransfer);
+  res.on("close", finishTransfer);
+  if (req.method === "HEAD") return res.end();
+  const stream = createReadStream(job.filePath, { start, end });
+  stream.on("error", (error) => {
+    console.error(error);
+    if (!res.writableEnded) res.destroy(error);
+  });
+  stream.pipe(res);
+}
+
+async function serveStatic(req, res, pathname) {
   const relativePath = pathname === "/" ? "index.html" : decodeURIComponent(pathname.slice(1));
   const filePath = resolve(publicDir, relativePath);
   if (!filePath.startsWith(`${publicDir}${sep}`) || !existsSync(filePath)) {
     sendJson(res, 404, { error: "Not found." });
     return;
   }
-
   const fileStat = await stat(filePath);
-  if (!fileStat.isFile()) {
-    sendJson(res, 404, { error: "Not found." });
-    return;
-  }
+  if (!fileStat.isFile()) return sendJson(res, 404, { error: "Not found." });
   res.writeHead(200, {
     "content-type": mimeTypes[extname(filePath)] || "application/octet-stream",
     "content-length": fileStat.size,
     "cache-control": "no-cache",
     "x-content-type-options": "nosniff",
   });
+  if (req.method === "HEAD") return res.end();
   createReadStream(filePath).pipe(res);
 }
+
+await mkdir(downloadRoot, { recursive: true });
+await cleanupOrphanedDownloads();
+const cleanupTimer = setInterval(() => void cleanupOrphanedDownloads().catch(console.error), Math.min(downloadJobTtl, 5 * 60_000));
+cleanupTimer.unref();
 
 const server = createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-    if (req.method === "POST" && requestUrl.pathname === "/api/formats") {
-      return await inspectMedia(req, res);
-    }
-    if (req.method === "POST" && requestUrl.pathname === "/api/downloads") {
-      return await createDownloadJob(req, res);
-    }
+    if (req.method === "POST" && requestUrl.pathname === "/api/formats") return await inspectMedia(req, res);
+    if (req.method === "POST" && requestUrl.pathname === "/api/downloads") return await createDownloadJob(req, res);
     const downloadRoute = requestUrl.pathname.match(/^\/api\/downloads\/([0-9a-f-]+)\/(events|file)$/);
-    if (req.method === "GET" && downloadRoute) {
+    if (downloadRoute) {
       const job = downloadJobs.get(downloadRoute[1]);
       if (!job) return sendJson(res, 404, { error: "This download has expired." });
-      return downloadRoute[2] === "events"
-        ? subscribeToDownload(job, req, res)
-        : streamDownload(job, req, res);
+      if (req.method === "GET" && downloadRoute[2] === "events") return subscribeToDownload(job, req, res);
+      if (["GET", "HEAD"].includes(req.method) && downloadRoute[2] === "file") {
+        return servePreparedDownload(job, req, res);
+      }
     }
-    if (req.method === "GET" || req.method === "HEAD") {
-      return await serveStatic(res, requestUrl.pathname);
-    }
+    if (req.method === "GET" || req.method === "HEAD") return await serveStatic(req, res, requestUrl.pathname);
     sendJson(res, 405, { error: "Method not allowed." });
   } catch (error) {
     if (!res.headersSent) sendJson(res, 500, { error: "The server could not complete the request." });
@@ -515,4 +560,5 @@ const server = createServer(async (req, res) => {
 
 server.listen(port, host, () => {
   console.log(`ytmp listening on http://${host}:${port}`);
+  console.log(`temporary downloads: ${downloadRoot}`);
 });
