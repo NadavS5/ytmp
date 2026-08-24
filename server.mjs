@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { extname, join, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 
-const port = Number(process.env.PORT) || 3000;
+const port = Number(process.env.PORT) || 8081;
 const host = process.env.HOST || "127.0.0.1";
 const publicDir = resolve("public");
+const cookiesFile = resolve(process.env.COOKIES_FILE || "cookies.txt");
 const maxBodyBytes = 16 * 1024;
 const maxConcurrentDownloads = Number(process.env.MAX_CONCURRENT_DOWNLOADS) || 2;
 let activeDownloads = 0;
@@ -54,7 +55,9 @@ async function readJson(req) {
 
 function runYtDlp(args, { timeout = 45_000, maxOutput = 8 * 1024 * 1024 } = {}) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn("yt-dlp", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("yt-dlp", ["--cookies", cookiesFile, "--js-runtimes", "node", ...args], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     let settled = false;
