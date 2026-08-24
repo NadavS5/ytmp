@@ -11,10 +11,11 @@ function positiveInteger(value, fallback) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-const port = Number(process.env.PORT) || 3000;
+const port = Number(process.env.PORT) || 8081;
 const host = process.env.HOST || "127.0.0.1";
 const publicDir = resolve("public");
 const downloadRoot = resolve(process.env.DOWNLOAD_DIR || join(tmpdir(), "ytmp"));
+const cookiesFile = resolve(process.env.COOKIES_FILE || "cookies.txt");
 const maxBodyBytes = 16 * 1024;
 const maxConcurrentDownloads = positiveInteger(process.env.MAX_CONCURRENT_DOWNLOADS, 1);
 const concurrentFragments = positiveInteger(process.env.CONCURRENT_FRAGMENTS, 4);
@@ -46,6 +47,10 @@ function sendJson(res, status, body, extraHeaders = {}) {
   res.end(JSON.stringify(body));
 }
 
+function ytDlpArgs(args) {
+  return ["--cookies", cookiesFile, "--js-runtimes", "node", ...args];
+}
+
 function isValidMediaUrl(value) {
   if (typeof value !== "string" || value.length > 2048) return false;
   try {
@@ -71,7 +76,9 @@ async function readJson(req) {
 
 function runYtDlp(args, { timeout = 45_000, maxOutput = 8 * 1024 * 1024 } = {}) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn("yt-dlp", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("yt-dlp", ytDlpArgs(args), {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -317,7 +324,7 @@ async function prepareDownload(job) {
     }
 
     sendJobEvent(job, "state", { status: "downloading" });
-    child = spawn("yt-dlp", buildDownloadArgs(job), { stdio: ["ignore", "pipe", "pipe"] });
+    child = spawn("yt-dlp", ytDlpArgs(buildDownloadArgs(job)), { stdio: ["ignore", "pipe", "pipe"] });
     let stdoutBuffer = "";
     let stderrBuffer = "";
     const consumeLines = (source, chunk) => {

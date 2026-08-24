@@ -9,6 +9,6 @@
     "check": "node --check server.mjs && node --check public/app.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   }
 }

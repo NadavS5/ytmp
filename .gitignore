@@ -1,4 +1,6 @@
 node_modules/
 .env
+cookies.txt
+*.swp
 *.log
 .DS_Store
